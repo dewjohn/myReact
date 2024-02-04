@@ -3,7 +3,7 @@ import {
   NoTimestamp,
   SyncLane,
   markRootUpdated,
-  includesSyncLane,
+  includesSyncLane, getNextLanes, getHighestPriorityLane,
 } from "./ReactFiberLane";
 import { ConcurrentMode, NoMode } from "./ReactTypeOfMode";
 import { now } from "./Scheduler";
@@ -18,11 +18,12 @@ import { supportsMicrotasks, scheduleMicrotask } from "./ReactFiberHostConfig";
 import {
   scheduleCallback as Scheduler_scheduleCallback,
   ImmediatePriority as ImmediateSchedulerPriority,
+  NormalPriority as NormalSchedulerPriority,
 } from "./Scheduler";
 import {
   getCurrentUpdatePriority,
   setCurrentUpdatePriority,
-  DiscreteEventPriority,
+  DiscreteEventPriority, lanesToEventPriority, DefaultEventPriority,
 } from "./ReactEventPriorities";
 
 export const NoContext = 0b000;
@@ -32,6 +33,7 @@ export const CommitContext = 0b100;
 
 let executionContext = NoContext;
 let workInProgressRootRenderLanes = NoLanes;
+let workInProgressRoot = null; // 当前工作的根
 
 export function flushSync(fn) {
   const prevExecutionContext = executionContext;
@@ -109,15 +111,15 @@ export function scheduleUpdateOnFiber(root, fiber, lane, eventTime) {
 function ensureRootIsScheduled(root, currentTime) {
   // 饥饿问题
   // markStarvedLanesAsExpired(root, currentTime);
-  // const nextLanes = getNextLanes(
-  //   root,
-  //   root === workInProgressRoot ? workInProgressRootRenderLanes : NoLanes
-  // );
+  const nextLanes = getNextLanes(
+    root,
+    root === workInProgressRoot ? workInProgressRootRenderLanes : NoLanes
+  );
   // TODO: 优先级相同的任务 直接 return
-  // const newCallbackPriority = getHighestPriorityLane(nextLanes);
-  const newCallbackPriority = SyncLane;
+  const newCallbackPriority = getHighestPriorityLane(nextLanes);
   // const existingCallbackPriority = root.callbackPriority;
   // if (newCallbackPriority === existingCallbackPriority) return;
+  let newCallbackNode;
   if (includesSyncLane(newCallbackPriority)) {
     if (root.tag === LegacyRoot) {
       // 将 callback 添加到 syncQueue 中
@@ -144,7 +146,24 @@ function ensureRootIsScheduled(root, currentTime) {
       );
     }
   } else {
+    // 并发模式
+    let schedulerPriorityLevel;
+    switch (lanesToEventPriority(nextLanes)) {
+      case DefaultEventPriority:
+        schedulerPriorityLevel = NormalSchedulerPriority;
+        break;
+      default:
+        schedulerPriorityLevel = NormalSchedulerPriority;
+        break;
+    }
+    newCallbackNode = Scheduler_scheduleCallback(
+        schedulerPriorityLevel,
+        performConcurrentWorkOnRoot.bind(null, root)
+    );
+
   }
+  root.callbackPriority = newCallbackPriority;
+  root.callbackNode = newCallbackNode;
   // root.callbackPriority = newCallbackPriority;
 }
 
